@@ -1,0 +1,184 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Party represents a participant in the privacy network
+model Party {
+  id             String   @id @default(uuid())
+  name           String
+  email          String   @unique
+  passwordHash   String
+  publicKey      String   @unique // ECDSA public key for identity
+  encryptionKey  String   @unique // X25519 public key for encryption
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  // Relations
+  ownedDomains        Domain[]              @relation("DomainAdmin")
+  domainMemberships   DomainMember[]
+  transactionParties  TransactionParty[]
+  disclosuresGranted  Disclosure[]          @relation("DisclosureGrantor")
+  disclosuresReceived Disclosure[]          @relation("DisclosureReceiver")
+}
+
+// Privacy Domain - isolated environment for private transactions
+model Domain {
+  id          String   @id @default(uuid())
+  domainId    String   @unique // On-chain identifier (bytes32)
+  name        String
+  description String?
+  adminId     String
+  admin       Party    @relation("DomainAdmin", fields: [adminId], references: [id])
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // On-chain tracking
+  registrationTxHash String?
+  
+  // Relations
+  members      DomainMember[]
+  transactions PrivateTransaction[]
+}
+
+model DomainMember {
+  id        String   @id @default(uuid())
+  domainId  String
+  domain    Domain   @relation(fields: [domainId], references: [id])
+  partyId   String
+  party     Party    @relation(fields: [partyId], references: [id])
+  role      MemberRole @default(MEMBER)
+  joinedAt  DateTime @default(now())
+  
+  @@unique([domainId, partyId])
+}
+
+enum MemberRole {
+  ADMIN
+  MEMBER
+  OBSERVER
+  AUDITOR
+}
+
+// Private Transaction with encrypted payload
+model PrivateTransaction {
+  id              String   @id @default(uuid())
+  transactionId   String   @unique // Public identifier
+  domainId        String
+  domain          Domain   @relation(fields: [domainId], references: [id])
+  
+  // Commitment (on-chain)
+  commitmentHash  String   @unique
+  commitmentTxHash String? // XDC transaction hash when committed
+  
+  // Transaction metadata (not encrypted)
+  txType          TransactionType
+  status          TransactionStatus @default(PENDING)
+  
+  // Encrypted payload (each party has their own encrypted copy)
+  // Stored in TransactionParty relation
+  
+  // Merkle root for selective disclosure
+  merkleRoot      String?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  committedAt     DateTime?
+  
+  // Relations
+  parties         TransactionParty[]
+  disclosures     Disclosure[]
+}
+
+enum TransactionType {
+  TRADE_FINANCE
+  RWA_TRANSFER
+  DVP_SETTLEMENT
+  PAYMENT
+  CUSTOM
+}
+
+enum TransactionStatus {
+  PENDING      // Created, awaiting signatures
+  PARTIALLY_SIGNED  // Some parties have signed
+  FULLY_SIGNED     // All required signatures collected
+  COMMITTED    // Committed on-chain
+  EXECUTED     // Business logic executed
+  CANCELLED    // Cancelled by parties
+}
+
+// Links parties to transactions with their encrypted view
+model TransactionParty {
+  id              String   @id @default(uuid())
+  transactionId   String
+  transaction     PrivateTransaction @relation(fields: [transactionId], references: [id])
+  partyId         String
+  party           Party    @relation(fields: [partyId], references: [id])
+  
+  role            PartyRole
+  
+  // Encrypted data envelope for this party
+  encryptedPayload String  @db.Text // Encrypted with party's public key
+  encryptedDek     String  // Encrypted DEK for this party
+  
+  // Signature
+  signature       String?
+  signedAt        DateTime?
+  
+  @@unique([transactionId, partyId])
+}
+
+enum PartyRole {
+  SIGNATORY  // Must sign the transaction
+  OBSERVER   // Can view but doesn't sign
+}
+
+// Selective Disclosure for auditors/regulators
+model Disclosure {
+  id              String   @id @default(uuid())
+  transactionId   String
+  transaction     PrivateTransaction @relation(fields: [transactionId], references: [id])
+  
+  grantorId       String
+  grantor         Party    @relation("DisclosureGrantor", fields: [grantorId], references: [id])
+  
+  receiverId      String
+  receiver        Party    @relation("DisclosureReceiver", fields: [receiverId], references: [id])
+  
+  // Which fields are disclosed
+  disclosedFields String[] // Array of field paths
+  
+  // Disclosed data (encrypted for receiver)
+  encryptedDisclosure String @db.Text
+  
+  // Merkle proof for verification
+  merkleProof     String   @db.Text
+  
+  // Metadata
+  purpose         String?  // e.g., "Regulatory audit Q1 2025"
+  expiresAt       DateTime?
+  createdAt       DateTime @default(now())
+  
+  @@unique([transactionId, grantorId, receiverId])
+}
+
+// Audit log for compliance
+model AuditLog {
+  id          String   @id @default(uuid())
+  action      String
+  actorId     String?
+  resourceType String
+  resourceId  String
+  details     Json?
+  ipAddress   String?
+  timestamp   DateTime @default(now())
+  
+  @@index([resourceType, resourceId])
+  @@index([actorId])
+  @@index([timestamp])
+}

@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: xdc-privacy-postgres
+    environment:
+      POSTGRES_USER: canton
+      POSTGRES_PASSWORD: canton_secret_2025
+      POSTGRES_DB: canton_privacy
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U canton -d canton_privacy"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: xdc-privacy-backend
+    environment:
+      DATABASE_URL: postgresql://canton:canton_secret_2025@postgres:5432/canton_privacy?schema=public
+      PORT: 4000
+      NODE_ENV: production
+      JWT_SECRET: xdc-privacy-jwt-secret-2026-production
+      JWT_EXPIRES_IN: 7d
+      XDC_MAINNET_RPC: https://rpc.xdc.org
+      XDC_APOTHEM_RPC: https://rpc.apothem.network
+      XDC_RPC_URL: https://rpc.apothem.network
+      XDC_CHAIN_ID: 51
+      CORS_ORIGIN: https://privacy.xdc.network,https://canton.xdc.network
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://api.privacy.xdc.network
+    container_name: xdc-privacy-frontend
+    ports:
+      - "3001:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    name: xdc-privacy-network
